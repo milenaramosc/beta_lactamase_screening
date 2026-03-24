@@ -23,7 +23,7 @@ experimental em bancada.
 ### 1. Clonar o repositório
 
 ```bash
-git clone <url-do-repositorio>
+git clone https://github.com/milenaramosc/beta_lactamase_screening
 cd beta_lactamase_screening
 ```
 
