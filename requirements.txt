@@ -1,0 +1,25 @@
+# Dependências Python
+biopython>=1.81
+requests>=2.31.0
+pyyaml>=6.0
+pandas>=2.0.0
+rdkit>=2023.3.1
+meeko>=0.4.0
+chembl_webresource_client>=0.10.8
+py3Dmol>=2.0.0
+openbabel-wheel>=3.1.1   # OpenBabel via Python (sem necessidade de instalação no sistema)
+scipy>=1.10.0            # dependência do meeko
+gemmi>=0.6.0             # dependência do meeko
+
+# Nota: as seguintes ferramentas precisam ser instaladas separadamente no sistema:
+#
+#   AutoDock Vina (OBRIGATÓRIO):
+#     Baixar binário em: https://vina.scripps.edu/downloads/
+#     Adicionar ao PATH: export PATH=$PATH:~/bin
+#     Ou instalar via conda: conda install -c conda-forge autodock-vina
+#
+#   PyMOL (OPCIONAL — apenas para imagens PNG estáticas):
+#     Fedora/RHEL:   sudo dnf install pymol
+#     Ubuntu/Debian: sudo apt install pymol
+#     Conda:         conda install -c conda-forge pymol-open-source
+#     Sem PyMOL, visualizações 3D interativas (.html) ainda funcionam normalmente.

@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+venv/
+.env
+results/
+*.sdf
+*.pdbqt
+*.logdata/compounds/*
+data/prepared/*
+data/structures/*
+data/*.json
+results/*
+scripts/__pycache__
