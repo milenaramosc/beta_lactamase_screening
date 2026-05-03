@@ -5,9 +5,11 @@ venv/
 results/
 *.sdf
 *.pdbqt
-*.logdata/compounds/*
+*.log
+data/compounds/*
 data/prepared/*
 data/structures/*
 data/*.json
 results/*
 scripts/__pycache__
+results/experiments/

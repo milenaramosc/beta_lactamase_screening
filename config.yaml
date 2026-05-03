@@ -2,41 +2,17 @@ target_query: beta-lactamase class A
 max_structures: 20
 resolution_warning_threshold: 3.0
 selected_targets:
-- 5A90
-- 4GKU
-- 1HTZ
-- 6C78
+- BETALAC13.3_CYS34-CHARGED
 compound_source: chembl
 max_compounds: 5000
 top_n_docking: 50
 binding_site:
   auto_detect: true
   targets:
-    5A90:
-      center_x: -36.181
-      center_y: 25.496
-      center_z: 12.297
-      size_x: 30.0
-      size_y: 30.0
-      size_z: 30.0
-    4GKU:
-      center_x: 10.852
-      center_y: 10.62
-      center_z: 17.135
-      size_x: 30.0
-      size_y: 30.0
-      size_z: 30.0
-    1HTZ:
-      center_x: 56.728
-      center_y: 28.086
-      center_z: 222.806
-      size_x: 30.0
-      size_y: 30.0
-      size_z: 30.0
-    6C78:
-      center_x: 3.877
-      center_y: 82.926
-      center_z: 3.966
+    BETALAC13.3_CYS34-CHARGED:
+      center_x: -4.6
+      center_y: 7.937
+      center_z: -43.471
       size_x: 30.0
       size_y: 30.0
       size_z: 30.0
