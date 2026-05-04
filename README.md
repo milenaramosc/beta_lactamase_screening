@@ -134,7 +134,39 @@ Saída: `results/ranking.csv` e `results/top50_poses/`
 
 ---
 
-### Etapa 5 — Análise ADMET
+### Etapa 4.5 — Análise pós-docking de interação (opcional)
+
+```bash
+python scripts/score_interactions.py \
+  --target-profile results/experiments/teste/target_profile.json \
+  --protein data/structures/betalac13.pdb \
+  --ligand-pose results/top50_poses/BETALAC13.3_CYS34-CHARGED__CHEMBL122450.pdbqt \
+  --out results/experiments/teste/interaction_score.json \
+  --verbose
+```
+
+Saída: `results/experiments/teste/interaction_score.json`
+
+---
+
+### Etapa 5 — Ranking multiobjetivo (consensus score)
+
+```bash
+python scripts/consensus_score.py \
+  --ranking results/ranking.csv \
+  --interactions results/experiments/teste/interaction_score.json \
+  --out results/experiments/teste/final_candidates.csv \
+  --verbose
+```
+
+Saída: `results/experiments/teste/final_candidates.csv`
+
+> Para usar um CSV consolidado com múltiplas poses, forneça `--interactions` apontando
+> para o arquivo CSV contendo várias linhas com `compound_id` e `interaction_score`.
+
+---
+
+### Etapa 6 — Análise ADMET
 
 ```bash
 python scripts/admet_analysis.py
@@ -144,7 +176,7 @@ Saída: `results/admet_report.csv` e `results/final_candidates.csv`
 
 ---
 
-### Etapa 6 — Salvar complexos e gerar visualizações
+### Etapa 7 — Salvar complexos e gerar visualizações
 
 ```bash
 python scripts/save_and_visualize.py
@@ -157,7 +189,7 @@ Saída:
 
 ---
 
-### Etapa 7 — Geração de candidatos de novo (algoritmo genético)
+### Etapa 8 — Geração de candidatos de novo (algoritmo genético)
 
 ```bash
 python scripts/generate_candidate.py

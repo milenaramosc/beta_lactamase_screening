@@ -13,10 +13,11 @@ Sua principal função é transformar um arquivo de coordenadas brutas (.pdb) em
 ## Como o profiler identifica o sitio ativo
 O profiler estima o sitio ativo de forma conservadora e reprodutivel, seguindo uma hierarquia:
 1. Registros `SITE` do PDB (quando presentes).
-2. Ligante co-cristalizado (maior ligante organico detectado).
-3. Centro de metais, caso haja ions compativeis com metalo-beta-lactamases.
-4. Residuos cataliticos candidatos (ex.: Ser, Lys, Glu) em proximidade.
-5. Fallback geometric (centroide de todos os atomos da cadeia selecionada).
+2. Sitio ativo informado pelo usuario (quando fornecido via argumento ou prompt).
+3. Ligante co-cristalizado (maior ligante organico detectado).
+4. Centro de metais, caso haja ions compativeis com metalo-beta-lactamases.
+5. Residuos cataliticos candidatos (ex.: Ser, Lys, Glu) em proximidade.
+6. Fallback geometric (centroide de todos os atomos da cadeia selecionada).
 
 ## Como o profiler detecta metais
 Metais sao detectados usando uma lista explicita de ions conhecidos (ex.: ZN, MG, MN, FE, FE2, FE3, CA, CO, NI, CU, NA, K). Isso evita classificar qualquer HETATM curto como metal.
@@ -31,6 +32,7 @@ Para gerar o perfil de um alvo, utilize o script `scripts/profile_target.py`:
 python scripts/profile_target.py \
   --pdb data/structures/alvo.pdb \
   --chain A \
+  --active-site A:SER:70,A:LYS:73,A:GLU:166 \
   --out results/experiments/nome_experimento/target_profile.json \
   --verbose
 ```
@@ -40,10 +42,40 @@ python scripts/profile_target.py \
 - `--out`: Caminho para o arquivo JSON de saida.
 - `--radius`: (Opcional) Raio em A para analise do bolso (padrao: 8.0).
 - `--chain`: (Opcional) Cadeia especifica a ser analisada. Se omitido e houver varias cadeias, uma cadeia e selecionada automaticamente.
+- `--active-site`: (Opcional) Residuo(s) do sitio ativo no formato CHAIN:RESNAME:RESID separados por virgula.
+- `--no-interactive`: (Opcional) Desativa prompts interativos no terminal.
 - `--verbose`: Exibe um resumo da analise no terminal.
 
 ## Interpretando quality_control
 O bloco `quality_control` informa se o profiler encontrou registros `SITE`, ligantes organicos e metais, alem de indicar quando foi necessario usar fallback. Notas explicam a selecao automatica de cadeia e outras decisoes conservadoras.
+
+## Quando o PDB nao tem SITE
+Se nao houver registros `SITE`, o profiler pergunta no terminal se o usuario deseja informar os residuos do sitio ativo. Caso o usuario pressione ENTER, a deteccao automatica segue normalmente. Se `--no-interactive` for usado, o profiler nao pergunta e segue direto para deteccao automatica.
+
+## Quando o usuario informa o sitio ativo
+Quando o usuario informa os residuos (via `--active-site` ou prompt), o profiler usa o centro geometrico desses residuos, define `detection_method` como `USER_PROVIDED_SITE` e registra a origem manual em `quality_control.notes`.
+
+## Exemplos adicionais
+Entrada interativa (sem `--no-interactive`):
+
+```bash
+python scripts/profile_target.py \
+  --pdb data/structures/betalac13.pdb \
+  --chain A \
+  --out results/experiments/teste/target_profile.json \
+  --verbose
+```
+
+Entrada sem prompt:
+
+```bash
+python scripts/profile_target.py \
+  --pdb data/structures/betalac13.pdb \
+  --chain A \
+  --no-interactive \
+  --out results/experiments/teste/target_profile.json \
+  --verbose
+```
 
 ## Exemplo de Saída
 O arquivo `target_profile.json` gerado possui a seguinte estrutura (resumida):

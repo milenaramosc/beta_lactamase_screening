@@ -1,7 +1,7 @@
 import json
 import math
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict, field
 
 from betalactamase_engine.utils.pdb_utils import load_structure, calculate_centroid
@@ -38,6 +38,8 @@ class TargetProfiler:
         }
         self.selected_chain = None
         self._water_entries = []
+        self.user_active_site_center = None
+        self.user_active_site_candidates = []
         
         # Typical residues for serine-beta-lactamases
         self.CATALYTIC_RES_TYPES = ["SER", "LYS", "GLU", "ASN", "ARG", "ASP"]
@@ -54,7 +56,8 @@ class TargetProfiler:
             return self.profile
 
         try:
-            self.structure = load_structure(self.pdb_path)
+            if self.structure is None:
+                self.structure = load_structure(self.pdb_path)
         except Exception as e:
             self.profile.warnings.append(f"Error loading PDB structure: {str(e)}")
             return self.profile
@@ -196,11 +199,7 @@ class TargetProfiler:
     def _read_site_records(self):
         site_residues = []
         try:
-            with open(self.pdb_path, "r") as handle:
-                for line in handle:
-                    if not line.startswith("SITE "):
-                        continue
-                    site_residues.extend(self._parse_site_line(line))
+            site_residues = self.parse_site_records_from_file(self.pdb_path)
         except OSError as exc:
             self.profile.warnings.append(f"Could not read PDB file for SITE records: {exc}")
             return []
@@ -244,6 +243,131 @@ class TargetProfiler:
 
         return residues
 
+    @staticmethod
+    def parse_site_records_from_file(pdb_path: Path) -> List[Dict[str, Any]]:
+        site_residues = []
+        with open(pdb_path, "r") as handle:
+            for line in handle:
+                if not line.startswith("SITE "):
+                    continue
+                site_residues.extend(TargetProfiler._parse_site_line(line))
+        return site_residues
+
+    @staticmethod
+    def _format_active_site_entry(entry: Dict[str, Any]) -> str:
+        return f"{entry['chain']}:{entry['resname']}:{entry['resseq']}"
+
+    def record_missing_active_site_entries(self, missing_entries: List[Dict[str, Any]]):
+        if not missing_entries:
+            return
+        formatted = ", ".join(self._format_active_site_entry(entry) for entry in missing_entries)
+        self.profile.warnings.append(f"User-provided active site residues not found: {formatted}")
+
+    def set_user_active_site(self, active_site_input: str) -> Dict[str, Any]:
+        parsed, format_errors = self._parse_active_site_input(active_site_input)
+
+        try:
+            if self.structure is None:
+                self.structure = load_structure(self.pdb_path)
+            if not self.profile.target:
+                self._extract_basic_info()
+        except Exception as e:
+            return {"valid": [], "missing": [], "format_errors": [str(e)]}
+
+        valid_residues = []
+        missing_entries = []
+        atoms = []
+        for entry in parsed:
+            residue = self._find_residue(entry)
+            if not residue:
+                missing_entries.append(entry)
+                continue
+            valid_residues.append(entry)
+            atoms.extend(list(residue.get_atoms()))
+
+        if not valid_residues or not atoms:
+            self.user_active_site_center = None
+            self.user_active_site_candidates = []
+            if missing_entries:
+                self.profile.warnings.append(
+                    "User-provided active site residues were not found; using automatic detection"
+                )
+            return {"valid": [], "missing": missing_entries, "format_errors": format_errors}
+
+        center = calculate_centroid(atoms)
+        candidates = []
+        for entry in valid_residues:
+            distance = self._distance(center, self._residue_centroid(entry))
+            candidates.append({
+                "resname": entry["resname"],
+                "chain": entry["chain"],
+                "id": entry["resseq"],
+                "distance": float(distance) if distance is not None else 0.0
+            })
+
+        self.user_active_site_center = center
+        self.user_active_site_candidates = candidates
+
+        return {"valid": candidates, "missing": missing_entries, "format_errors": format_errors}
+
+    def _parse_active_site_input(self, active_site_input: str) -> Tuple[List[Dict[str, Any]], List[str]]:
+        entries = []
+        format_errors = []
+        if not active_site_input or not active_site_input.strip():
+            return [], []
+
+        raw_items = [item.strip() for item in active_site_input.split(",") if item.strip()]
+        for raw in raw_items:
+            parts = [part.strip() for part in raw.split(":")]
+            if len(parts) != 3:
+                format_errors.append(raw)
+                continue
+            chain, resname, resid = parts
+            if not chain:
+                format_errors.append(raw)
+                continue
+            resname = resname.upper()
+            if len(resname) != 3:
+                format_errors.append(raw)
+                continue
+            try:
+                resid_int = int(resid)
+            except ValueError:
+                format_errors.append(raw)
+                continue
+            entries.append({
+                "chain": chain.upper(),
+                "resname": resname,
+                "resseq": resid_int
+            })
+
+        return entries, format_errors
+
+    def _find_residue(self, entry: Dict[str, Any]):
+        chain_id = entry["chain"]
+        resseq = entry["resseq"]
+        resname = entry["resname"]
+        try:
+            chain = self.structure[0][chain_id]
+        except Exception:
+            return None
+
+        for residue in chain.get_residues():
+            if residue.get_id()[0] != " ":
+                continue
+            if residue.get_id()[1] != resseq:
+                continue
+            if residue.get_resname().strip() != resname:
+                continue
+            return residue
+        return None
+
+    def _residue_centroid(self, entry: Dict[str, Any]) -> Optional[List[float]]:
+        residue = self._find_residue(entry)
+        if not residue:
+            return None
+        return calculate_centroid(list(residue.get_atoms()))
+
     def _iter_residues(self):
         if not self.selected_chain:
             return self.structure.get_residues()
@@ -274,6 +398,26 @@ class TargetProfiler:
 
         # 1. Try SITE records
         site_residues = self._read_site_records()
+
+        # 1a. Use user-provided residues when available
+        if self.user_active_site_center and self.user_active_site_candidates:
+            center = self.user_active_site_center
+            method = "USER_PROVIDED_SITE"
+
+            self.profile.active_site = {
+                "center": center,
+                "detection_method": method,
+                "radius_angstrom": self.radius,
+                "candidate_catalytic_residues": self.user_active_site_candidates
+            }
+
+            if not self.profile.quality_control.get("has_site_records"):
+                self.profile.quality_control["notes"].append(
+                    "SITE records were absent; active site was provided manually by user."
+                )
+            self.profile.quality_control["used_fallback"] = False
+            return
+
         if site_residues:
             site_atoms = []
             for residue_data in site_residues:
@@ -473,6 +617,8 @@ class TargetProfiler:
             }
             
         self.profile.pocket_properties = props
+        if self.profile.active_site.get("detection_method") == "USER_PROVIDED_SITE":
+            return
         self.profile.active_site["candidate_catalytic_residues"] = catalytic_candidates
 
     def _infer_class(self):
@@ -526,6 +672,9 @@ class TargetProfiler:
             "confidence": confidence,
             "evidence": evidence
         }
+
+        if self.profile.active_site.get("detection_method") == "USER_PROVIDED_SITE":
+            self.profile.classification["evidence"].append("Active site residues provided by user")
 
     def save_json(self, out_path: Path):
         out_path = Path(out_path)
