@@ -76,12 +76,22 @@ Saída: `data/structures/*.pdb` e `data/structures_index.json`
 
 ### Etapa 2 — Selecionar alvos para o docking
 
+Para escolher entre estruturas já baixadas ou importar um arquivo PDB local:
+
 ```bash
 python scripts/select_targets.py
 ```
 
-Exibe tabela interativa. Selecione os IDs desejados (ex: `1ZG4,1BTL`).
-A seleção é salva automaticamente em `config.yaml`.
+Para importar diretamente uma beta-lactamase do seu computador:
+
+```bash
+python scripts/select_targets.py --local-pdb /caminho/para/minha_beta_lactamase.pdb --force
+```
+
+Ao importar um PDB local, o arquivo é copiado para `data/structures/` e passa a ser o único alvo em `config.yaml`.
+Isso faz com que a preparação, o docking e o fluxo do algoritmo genético usem apenas essa beta-lactamase.
+
+Ao selecionar estruturas baixadas, a tabela interativa permite escolher os IDs desejados (ex: `1ZG4,1BTL`).
 
 ---
 
@@ -174,6 +184,10 @@ python scripts/admet_analysis.py
 
 Saída: `results/admet_report.csv` e `results/final_candidates.csv`
 
+> Esse `results/final_candidates.csv` pertence ao fluxo ADMET antigo. Para a Etapa 9,
+> use `results/experiments/<experimento>/final_candidates.csv`, gerado pela Etapa 5
+> (`scripts/consensus_score.py`).
+
 ---
 
 ### Etapa 7 — Salvar complexos e gerar visualizações
@@ -214,6 +228,42 @@ Saída: `results/generated_candidates.sdf` e `results/generated_candidates.csv`
 
 ---
 
+### Etapa 9 — Otimização genética guiada pelo consensus score
+
+```bash
+python scripts/genetic_optimize.py \
+  --final-candidates results/experiments/teste/final_candidates.csv \
+  --compounds data/compounds/compounds.sdf \
+  --out results/experiments/teste/generated_candidates.sdf \
+  --out-csv results/experiments/teste/generated_candidates_summary.csv \
+  --top-n-seeds 10 \
+  --generations 10 \
+  --population-size 30 \
+  --seed 42 \
+  --verbose
+```
+
+Com a mesma seed, os mesmos inputs e os mesmos parâmetros, a saída deve ser reprodutível.
+`--population-size` é o alvo de moléculas únicas após deduplicação; se o algoritmo não conseguir
+atingir esse total, ele mostra um aviso.
+
+Filtros químicos mínimos são aplicados antes da saída principal:
+`--max-molecular-weight` (650), `--max-tpsa` (250), `--max-hbd` (8),
+`--max-hba` (15) e `--min-qed` (0.05).
+
+Saída:
+- `generated_candidates.sdf` — apenas moléculas válidas/aprovadas
+- `generated_candidates_summary.csv` — apenas moléculas válidas/aprovadas
+- `generated_candidates_filtered.csv` — auditoria de moléculas filtradas, criado automaticamente quando `--out-csv` é usado
+
+Os candidatos gerados devem retornar ao ciclo:
+- preparação de ligantes
+- docking
+- interaction scoring
+- consensus scoring
+
+---
+
 ## Estrutura do Projeto
 
 ```
@@ -233,13 +283,17 @@ beta_lactamase_screening/
 │   ├── prepare_protein.py       # Etapa 2.5
 │   ├── fetch_compounds.py       # Etapa 3
 │   ├── screen_and_rank.py       # Etapa 4
-│   ├── admet_analysis.py        # Etapa 5
-│   ├── save_and_visualize.py    # Etapa 6
-│   └── generate_candidate.py   # Etapa 7
+│   ├── score_interactions.py    # Etapa 4.5
+│   ├── consensus_score.py       # Etapa 5
+│   ├── admet_analysis.py        # Etapa 6
+│   ├── save_and_visualize.py    # Etapa 7
+│   ├── generate_candidate.py    # Etapa 8
+│   └── genetic_optimize.py      # Etapa 9
 └── results/
     ├── ranking.csv
     ├── admet_report.csv
     ├── final_candidates.csv
+    ├── experiments/
     ├── generated_candidates.csv
     ├── generated_candidates.sdf
     ├── top50_poses/

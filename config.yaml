@@ -2,20 +2,20 @@ target_query: beta-lactamase class A
 max_structures: 20
 resolution_warning_threshold: 3.0
 selected_targets:
-- BETALAC13.3_CYS34-CHARGED
+- 5HW5
 compound_source: chembl
 max_compounds: 5000
 top_n_docking: 50
 binding_site:
   auto_detect: true
   targets:
-    BETALAC13.3_CYS34-CHARGED:
-      center_x: -4.6
-      center_y: 7.937
-      center_z: -43.471
-      size_x: 30.0
-      size_y: 30.0
-      size_z: 30.0
+    5HW5:
+      center_x: -16.477
+      center_y: -6.453
+      center_z: 23.585
+      size_x: 56.556
+      size_y: 76.206
+      size_z: 68.639
 vina_exhaustiveness: 8
 vina_num_modes: 9
 docking_workers: 4

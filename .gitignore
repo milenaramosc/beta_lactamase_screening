@@ -2,7 +2,6 @@ __pycache__/
 *.pyc
 venv/
 .env
-results/
 *.sdf
 *.pdbqt
 *.log
@@ -11,5 +10,6 @@ data/prepared/*
 data/structures/*
 data/*.json
 results/*
-scripts/__pycache__
 results/experiments/
+results/tmp/
+results/cache/
