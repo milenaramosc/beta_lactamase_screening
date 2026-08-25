@@ -139,6 +139,12 @@ python scripts/screen_and_rank.py
 
 Saída: `results/ranking.csv` e `results/top50_poses/`
 
+Para dockar moléculas geradas pelo AG em vez da biblioteca principal:
+
+```bash
+python scripts/screen_and_rank.py --ligands results/experiments/teste/generated_candidates.sdf
+```
+
 > Pode levar várias horas dependendo do número de compostos e CPUs disponíveis.
 > O progresso é salvo incrementalmente; interrompa e retome sem perda de dados.
 
@@ -209,10 +215,9 @@ Saída:
 python scripts/generate_candidate.py
 ```
 
-Lê os top compostos de `results/ranking.csv` como população-semente e executa um algoritmo genético
-para gerar novas moléculas via fragmentação BRICS (RDKit) + operadores de crossover e mutação.
-A função de fitness combina similaridade de Tanimoto com compostos de referência, escore de Lipinski
-e penalidade de peso molecular.
+Lê os top compostos de `results/ranking.csv` como população-semente e executa o
+núcleo unificado do AG para gerar novas moléculas via fragmentação BRICS (RDKit),
+operadores de crossover e mutação, RO5 de Lipinski e propriedades físico-químicas.
 
 Parâmetros opcionais:
 ```bash
@@ -243,13 +248,15 @@ python scripts/genetic_optimize.py \
   --verbose
 ```
 
-Com a mesma seed, os mesmos inputs e os mesmos parâmetros, a saída deve ser reprodutível.
+Os comandos `generate_candidate.py`, `generate_inhibitors_from_protein.py` e
+`genetic_optimize.py` usam o mesmo núcleo de AG. Com a mesma seed, os mesmos
+inputs e os mesmos parâmetros, a saída deve ser reprodutível.
 `--population-size` é o alvo de moléculas únicas após deduplicação; se o algoritmo não conseguir
 atingir esse total, ele mostra um aviso.
 
 Filtros químicos mínimos são aplicados antes da saída principal:
-`--max-molecular-weight` (650), `--max-tpsa` (250), `--max-hbd` (8),
-`--max-hba` (15) e `--min-qed` (0.05).
+`--max-molecular-weight` (500), `--max-logp` (5), `--max-tpsa` (250),
+`--max-hbd` (5), `--max-hba` (10) e `--min-qed` (0.05).
 
 Saída:
 - `generated_candidates.sdf` — apenas moléculas válidas/aprovadas
@@ -261,6 +268,12 @@ Os candidatos gerados devem retornar ao ciclo:
 - docking
 - interaction scoring
 - consensus scoring
+
+Use:
+
+```bash
+python scripts/screen_and_rank.py --ligands results/experiments/teste/generated_candidates.sdf
+```
 
 ---
 

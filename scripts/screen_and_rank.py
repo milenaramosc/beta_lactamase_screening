@@ -43,6 +43,11 @@ def project_path(p: str) -> Path:
     return PROJECT_DIR / p
 
 
+def resolve_input_path(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else PROJECT_DIR / path
+
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 def load_config(config_path: Path) -> dict:
@@ -209,7 +214,11 @@ def prepare_ligand_pdbqt(mol, name: str, out_dir: Path) -> Path | None:
         return out_path
     if mol_has_unsupported_elements(mol):
         return None
+
     try:
+        mol = Chem.Mol(mol)
+        if any(atom.GetNumImplicitHs() for atom in mol.GetAtoms()):
+            mol = Chem.AddHs(mol, addCoords=True)
         prep = MoleculePreparation()
         molsetups = prep.prepare(mol)
         if not molsetups:
@@ -222,6 +231,23 @@ def prepare_ligand_pdbqt(mol, name: str, out_dir: Path) -> Path | None:
     except Exception as e:
         print(f"    Meeko failed for {name}: {e}", file=sys.stderr)
         return None
+
+
+def ligand_display_name(mol, fallback: str) -> str:
+    for key in (
+        "generated_id",
+        "compound_id",
+        "COMPOUND_ID",
+        "_Name",
+        "ID",
+        "name",
+        "SMILES",
+    ):
+        if mol.HasProp(key):
+            value = mol.GetProp(key).strip()
+            if value:
+                return value
+    return fallback
 
 
 # ── Docking ───────────────────────────────────────────────────────────────────
@@ -348,6 +374,11 @@ def main():
         "--resume", action="store_true",
         help="Resume a previously interrupted docking run"
     )
+    parser.add_argument(
+        "--ligands",
+        default="data/compounds/compounds.sdf",
+        help="Ligand SDF to dock (default: data/compounds/compounds.sdf)",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -363,7 +394,7 @@ def main():
     prep_dir = project_path("data/prepared")
     prep_dir.mkdir(exist_ok=True)
 
-    compounds_sdf = project_path("data/compounds/compounds.sdf")
+    compounds_sdf = resolve_input_path(args.ligands)
     structures_dir = project_path("data/structures")
 
     ranking_csv = output_dir / "ranking.csv"
@@ -399,7 +430,7 @@ def main():
     for i, mol in enumerate(suppl):
         if mol is None:
             continue
-        name = mol.GetProp("_Name") if mol.HasProp("_Name") else f"compound_{i}"
+        name = ligand_display_name(mol, f"compound_{i}")
         # Sanitise name for use as filename (replace spaces/slashes)
         safe_name = re.sub(r"[^\w\-]", "_", name)[:80]
         compounds.append((safe_name, mol))

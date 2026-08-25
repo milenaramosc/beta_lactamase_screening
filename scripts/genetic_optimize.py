@@ -38,10 +38,11 @@ def main() -> None:
     parser.add_argument("--elite-size", type=int, default=5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--run-id")
-    parser.add_argument("--max-molecular-weight", type=float, default=650.0)
+    parser.add_argument("--max-molecular-weight", type=float, default=500.0)
+    parser.add_argument("--max-logp", type=float, default=5.0)
     parser.add_argument("--max-tpsa", type=float, default=250.0)
-    parser.add_argument("--max-hbd", type=int, default=8)
-    parser.add_argument("--max-hba", type=int, default=15)
+    parser.add_argument("--max-hbd", type=int, default=5)
+    parser.add_argument("--max-hba", type=int, default=10)
     parser.add_argument("--min-qed", type=float, default=0.05)
     parser.add_argument("--verbose", action="store_true")
 
@@ -81,6 +82,7 @@ def main() -> None:
             seed=args.seed,
             run_id=args.run_id,
             max_molecular_weight=args.max_molecular_weight,
+            max_logp=args.max_logp,
             max_tpsa=args.max_tpsa,
             max_hbd=args.max_hbd,
             max_hba=args.max_hba,
@@ -117,7 +119,7 @@ def main() -> None:
                 print(f" - {warning}")
 
     print(
-        "Os candidatos gerados devem retornar ao ciclo de docking e consensus scoring."
+        "Os candidatos gerados devem retornar ao ciclo de docking, interaction scoring e consensus scoring."
     )
 
 

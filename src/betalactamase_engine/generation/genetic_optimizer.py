@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 import csv
 import hashlib
 import random
@@ -44,6 +44,8 @@ TRANSFORMS = [
     "[C:1](=O)[OH]>>[C:1](=O)[NH2]",
 ]
 
+FitnessFunction = Callable[[Chem.Mol, List], float]
+
 
 @dataclass
 class OptimizationSummary:
@@ -57,11 +59,21 @@ class OptimizationSummary:
 
 
 @dataclass(frozen=True)
+class SeedRecord:
+    compound_id: str
+    mol: Chem.Mol
+    source_score: float
+    source_classification: str = ""
+    source_mode: str = ""
+
+
+@dataclass(frozen=True)
 class ChemicalFilters:
-    max_molecular_weight: float = 650.0
+    max_molecular_weight: float = 500.0
+    max_logp: float = 5.0
     max_tpsa: float = 250.0
-    max_hbd: int = 8
-    max_hba: int = 15
+    max_hbd: int = 5
+    max_hba: int = 10
     min_qed: float = 0.05
 
 
@@ -74,6 +86,7 @@ FILTERED_FIELDNAMES = [
     "parent_2",
     "filter_reason",
     "molecular_weight",
+    "logp",
     "tpsa",
     "hbd",
     "hba",
@@ -83,6 +96,7 @@ FILTERED_FIELDNAMES = [
     "filtered",
     "source_final_score",
     "source_final_classification",
+    "source_mode",
 ]
 
 
@@ -192,6 +206,141 @@ def load_sdf_library(path: Path) -> List[Chem.Mol]:
         return tuple(values)
 
     return sorted(mols, key=sort_key)
+
+
+def _mol_name_index(mols: List[Chem.Mol]) -> Dict[str, List[Chem.Mol]]:
+    index: Dict[str, List[Chem.Mol]] = {}
+    for mol in mols:
+        for key in SDF_KEYS:
+            if mol.HasProp(key):
+                value = mol.GetProp(key).strip()
+                if value:
+                    index.setdefault(value, []).append(mol)
+    return index
+
+
+def _lookup_mol(index: Dict[str, List[Chem.Mol]], compound_id: str) -> Optional[Chem.Mol]:
+    hits = index.get(compound_id.strip())
+    return hits[0] if hits else None
+
+
+def load_ranking_seeds(
+    ranking_path: Path,
+    compounds_path: Path,
+    top_n: int = 20,
+) -> Tuple[List[SeedRecord], List[str]]:
+    if not ranking_path.exists():
+        raise FileNotFoundError(f"ranking.csv not found: {ranking_path}")
+    if ranking_path.stat().st_size == 0:
+        raise ValueError("ranking.csv is empty")
+
+    with open(ranking_path, "r") as handle:
+        reader = csv.DictReader(handle)
+        if not reader.fieldnames:
+            raise ValueError("ranking.csv has no header")
+        required = {"compound_id", "dg_kcal_mol"}
+        missing = required.difference(set(reader.fieldnames))
+        if missing:
+            raise ValueError("ranking.csv missing columns: " + ", ".join(sorted(missing)))
+        parsed = []
+        for row in reader:
+            compound_id = (row.get("compound_id") or "").strip()
+            if not compound_id:
+                continue
+            try:
+                dg = float(row.get("dg_kcal_mol", ""))
+            except ValueError:
+                continue
+            parsed.append((compound_id, dg))
+
+    if not parsed:
+        raise ValueError("No valid docking scores found in ranking.csv")
+
+    parsed = sorted(parsed, key=lambda item: item[1])[:top_n]
+    values = [dg for _, dg in parsed]
+    best, worst = min(values), max(values)
+    if best == worst:
+        scores = [0.5 for _ in values]
+    else:
+        scores = [(worst - value) / (worst - best) for value in values]
+
+    mols = load_sdf_library(compounds_path)
+    index = _mol_name_index(mols)
+    seeds: List[SeedRecord] = []
+    warnings: List[str] = []
+    for (compound_id, _), score in zip(parsed, scores):
+        mol = _lookup_mol(index, compound_id)
+        if mol is None:
+            warnings.append(f"Seed not found in SDF: {compound_id}")
+            continue
+        seeds.append(
+            SeedRecord(
+                compound_id=compound_id,
+                mol=mol,
+                source_score=score,
+                source_classification="docking_seed",
+                source_mode="ranking",
+            )
+        )
+
+    if not seeds:
+        raise ValueError("No ranking seeds mapped to SDF entries")
+    return seeds, warnings
+
+
+def load_consensus_seeds(
+    final_candidates_path: Path,
+    compounds_path: Path,
+    top_n: int = 10,
+    min_final_score: float = 0.0,
+) -> Tuple[List[SeedRecord], List[str]]:
+    rows, warnings = load_final_candidates(final_candidates_path)
+    seed_rows, seed_norms, select_warnings = select_seeds(
+        rows, top_n=top_n, min_score=min_final_score
+    )
+    warnings.extend(select_warnings)
+    mols = load_sdf_library(compounds_path)
+    mapped, map_warnings = map_seeds_to_mols(seed_rows, mols)
+    warnings.extend(map_warnings)
+
+    seeds: List[SeedRecord] = []
+    for entry in mapped:
+        row = entry["row"]
+        compound_id = str(row.get("compound_id", "")).strip()
+        seeds.append(
+            SeedRecord(
+                compound_id=compound_id,
+                mol=entry["mol"],
+                source_score=seed_norms.get(compound_id, 0.0),
+                source_classification=row.get("final_classification", ""),
+                source_mode="consensus",
+            )
+        )
+    if not seeds:
+        raise ValueError("No consensus seeds mapped to SDF entries")
+    return seeds, warnings
+
+
+def build_known_inhibitor_seeds(inhibitors: Dict[str, str]) -> Tuple[List[SeedRecord], List[str]]:
+    seeds: List[SeedRecord] = []
+    warnings: List[str] = []
+    for name, smiles in inhibitors.items():
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            warnings.append(f"Known inhibitor SMILES invalid: {name}")
+            continue
+        seeds.append(
+            SeedRecord(
+                compound_id=name,
+                mol=mol,
+                source_score=1.0,
+                source_classification="known_inhibitor",
+                source_mode="protein",
+            )
+        )
+    if not seeds:
+        raise ValueError("No valid known inhibitor seeds")
+    return seeds, warnings
 
 
 def map_seeds_to_mols(
@@ -321,6 +470,16 @@ def estimated_fitness(mol: Chem.Mol, seed_fps: List) -> float:
     return max(0.0, min(score, 1.0))
 
 
+def _score_molecule(
+    mol: Chem.Mol,
+    seed_fps: List,
+    fitness_fn: Optional[FitnessFunction] = None,
+) -> float:
+    if fitness_fn is not None:
+        return max(0.0, min(float(fitness_fn(mol, seed_fps)), 1.0))
+    return estimated_fitness(mol, seed_fps)
+
+
 def normalize_mapped_seeds(
     mapped: List[Dict[str, object]],
     seed_norms: Dict[str, float],
@@ -360,6 +519,7 @@ def build_initial_population(
     population_size: int,
     rng: random.Random,
     seed_fps: List,
+    fitness_fn: Optional[FitnessFunction] = None,
 ) -> Tuple[List[Dict[str, object]], List[str]]:
     population: List[Dict[str, object]] = []
     warnings: List[str] = []
@@ -381,7 +541,7 @@ def build_initial_population(
             if variant is None:
                 variant = seed["mol"]
                 notes = "estimated_fitness;mutation_failed"
-            est_fit = estimated_fitness(variant, seed_fps)
+            est_fit = _score_molecule(variant, seed_fps, fitness_fn)
             population.append(
                 {
                     "compound_id": cid,
@@ -490,6 +650,7 @@ def build_props(entry: Dict[str, object], counter: int, run_id: str) -> Dict[str
         ),
         "source_final_score": entry.get("source_final_score", ""),
         "source_final_classification": entry.get("source_final_classification", ""),
+        "source_mode": entry.get("source_mode", ""),
         "valid_molecule": True,
         "filter_reason": "",
         "notes": entry.get("notes", ""),
@@ -510,6 +671,7 @@ def build_csv_row(entry: Dict[str, object]) -> Dict[str, object]:
         ],
         "source_final_score": entry["props"]["source_final_score"],
         "source_final_classification": entry["props"]["source_final_classification"],
+        "source_mode": entry["props"].get("source_mode", ""),
         "molecular_weight": f"{Descriptors.MolWt(mol):.2f}",
         "logp": f"{Descriptors.MolLogP(mol):.2f}",
         "hbd": Descriptors.NumHDonors(mol),
@@ -538,6 +700,8 @@ def filter_reasons(mol: Chem.Mol, filters: ChemicalFilters) -> List[str]:
     reasons = []
     if metrics["molecular_weight"] > filters.max_molecular_weight:
         reasons.append(f"mw>{filters.max_molecular_weight:g}")
+    if metrics["logp"] > filters.max_logp:
+        reasons.append(f"logp>{filters.max_logp:g}")
     if metrics["tpsa"] > filters.max_tpsa:
         reasons.append(f"tpsa>{filters.max_tpsa:g}")
     if metrics["hbd"] > filters.max_hbd:
@@ -575,6 +739,7 @@ def build_filtered_row(
         "parent_2": entry.get("parent_2", ""),
         "filter_reason": reason,
         "molecular_weight": f"{metrics['molecular_weight']:.2f}" if metrics else "",
+        "logp": f"{metrics['logp']:.2f}" if metrics else "",
         "tpsa": f"{metrics['tpsa']:.2f}" if metrics else "",
         "hbd": metrics["hbd"] if metrics else "",
         "hba": metrics["hba"] if metrics else "",
@@ -584,6 +749,7 @@ def build_filtered_row(
         "filtered": "true",
         "source_final_score": entry.get("source_final_score", ""),
         "source_final_classification": entry.get("source_final_classification", ""),
+        "source_mode": entry.get("source_mode", ""),
     }
 
 
@@ -619,6 +785,7 @@ def write_csv(rows: List[Dict[str, object]], out_path: Path) -> None:
         "inherited_or_estimated_fitness",
         "source_final_score",
         "source_final_classification",
+        "source_mode",
         "molecular_weight",
         "logp",
         "hbd",
@@ -653,6 +820,7 @@ def _try_replenish_unique_population(
     filters: ChemicalFilters,
     warnings: List[str],
     filtered_rows: List[Dict[str, object]],
+    fitness_fn: Optional[FitnessFunction] = None,
 ) -> List[Dict[str, object]]:
     if population_size <= 1 or len(population) >= population_size or not population:
         return population
@@ -715,7 +883,9 @@ def _try_replenish_unique_population(
             filtered_rows.append(build_filtered_row(child_entry, ";".join(reasons)))
             continue
 
-        child_entry["inherited_or_estimated_fitness"] = estimated_fitness(child_mol, seed_fps)
+        child_entry["inherited_or_estimated_fitness"] = _score_molecule(
+            child_mol, seed_fps, fitness_fn
+        )
         population.append(child_entry)
         seen.add(smiles)
 
@@ -726,13 +896,33 @@ def _try_replenish_unique_population(
     return population
 
 
-def run_genetic_optimization(
-    final_candidates_path: Path,
-    compounds_path: Path,
+def _seed_records_to_population(seeds: List[SeedRecord]) -> List[Dict[str, object]]:
+    normalized = []
+    for seed in seeds:
+        normalized.append(
+            {
+                "compound_id": seed.compound_id,
+                "mol": seed.mol,
+                "operation": "seed",
+                "generation": 0,
+                "parent_1": "",
+                "parent_2": "",
+                "source_seed_id": seed.compound_id,
+                "source_final_score": f"{seed.source_score:.6g}",
+                "source_final_classification": seed.source_classification,
+                "source_mode": seed.source_mode,
+                "inherited_or_estimated_fitness": seed.source_score,
+                "valid_molecule": True,
+                "notes": "",
+            }
+        )
+    return normalized
+
+
+def run_genetic_optimization_from_seeds(
+    seeds: List[SeedRecord],
     out_sdf: Path,
     out_csv: Optional[Path],
-    top_n_seeds: int = 10,
-    min_final_score: float = 0.0,
     generations: int = 10,
     population_size: int = 30,
     mutation_rate: float = 0.25,
@@ -740,44 +930,34 @@ def run_genetic_optimization(
     elite_size: int = 5,
     seed: int = 42,
     run_id: Optional[str] = None,
-    max_molecular_weight: float = 650.0,
+    max_molecular_weight: float = 500.0,
+    max_logp: float = 5.0,
     max_tpsa: float = 250.0,
-    max_hbd: int = 8,
-    max_hba: int = 15,
+    max_hbd: int = 5,
+    max_hba: int = 10,
     min_qed: float = 0.05,
+    fitness_fn: Optional[FitnessFunction] = None,
+    initial_warnings: Optional[List[str]] = None,
+    output_limit: Optional[int] = None,
 ) -> OptimizationSummary:
     if population_size < 1:
         raise ValueError("population_size must be at least 1")
+    if not seeds:
+        raise ValueError("No seed molecules provided")
 
     rng = random.Random(seed)
     filters = ChemicalFilters(
         max_molecular_weight=max_molecular_weight,
+        max_logp=max_logp,
         max_tpsa=max_tpsa,
         max_hbd=max_hbd,
         max_hba=max_hba,
         min_qed=min_qed,
     )
+    warnings: List[str] = list(initial_warnings or [])
     filtered_rows: List[Dict[str, object]] = []
-    rows, warnings = load_final_candidates(final_candidates_path)
-    seed_rows, seed_norms, select_warnings = select_seeds(
-        rows, top_n=top_n_seeds, min_score=min_final_score
-    )
-    warnings.extend(select_warnings)
-    seed_order = [row.get("compound_id", "").strip() for row in seed_rows]
-    mols = load_sdf_library(compounds_path)
-    mapped, map_warnings = map_seeds_to_mols(seed_rows, mols)
-    warnings.extend(map_warnings)
 
-    seed_scores = [
-        seed_norms.get(row.get("compound_id", "").strip(), 0.0) for row in seed_rows
-    ]
-    normalized_scores = seed_fitness(seed_scores)
-    seed_norms = {
-        row.get("compound_id", "").strip(): score
-        for row, score in zip(seed_rows, normalized_scores)
-    }
-
-    seed_records = normalize_mapped_seeds(mapped, seed_norms, seed_order)
+    seed_records = _seed_records_to_population(seeds)
     seed_fps = []
     for seed_entry in seed_records:
         try:
@@ -788,8 +968,13 @@ def run_genetic_optimization(
         except Exception:
             append_note(seed_entry, "seed_fingerprint_failed")
 
+    for seed_entry in seed_records:
+        seed_entry["inherited_or_estimated_fitness"] = _score_molecule(
+            seed_entry["mol"], seed_fps, fitness_fn
+        )
+
     population, init_warnings = build_initial_population(
-        seed_records, population_size, rng, seed_fps
+        seed_records, population_size, rng, seed_fps, fitness_fn
     )
     warnings.extend(init_warnings)
 
@@ -823,6 +1008,7 @@ def run_genetic_optimization(
                 )
             else:
                 parent_b = parent_a
+
             op_roll = rng.random()
             child_mol: Optional[Chem.Mol] = None
             operation = "clone"
@@ -848,32 +1034,24 @@ def run_genetic_optimization(
                 child_mol = parent_a["mol"]
                 operation = "clone"
 
+            best_parent = _best_parent(parent_a, parent_b)
             child_entry: Dict[str, object] = {
-                "compound_id": parent_a.get("compound_id", ""),
+                "compound_id": best_parent.get("compound_id", ""),
                 "mol": child_mol,
                 "operation": operation,
                 "generation": gen,
                 "parent_1": parent_a.get("source_seed_id", ""),
                 "parent_2": parent_b.get("source_seed_id", "") if operation == "crossover" else "",
-                "source_seed_id": parent_a.get("source_seed_id", ""),
-                "source_final_score": parent_a.get("source_final_score", ""),
-                "source_final_classification": parent_a.get(
+                "source_seed_id": best_parent.get("source_seed_id", ""),
+                "source_final_score": best_parent.get("source_final_score", ""),
+                "source_final_classification": best_parent.get(
                     "source_final_classification", ""
                 ),
+                "source_mode": best_parent.get("source_mode", ""),
                 "inherited_or_estimated_fitness": 0.0,
                 "valid_molecule": True,
-                "notes": "",
+                "notes": "estimated_fitness",
             }
-
-            best_parent = _best_parent(parent_a, parent_b)
-            child_entry["source_seed_id"] = best_parent.get("source_seed_id", "")
-            child_entry["source_final_score"] = best_parent.get("source_final_score", "")
-            child_entry["source_final_classification"] = best_parent.get(
-                "source_final_classification", ""
-            )
-
-            if operation in {"mutation", "crossover", "clone"}:
-                append_note(child_entry, "estimated_fitness")
             if mutation_failed:
                 append_note(child_entry, "mutation_failed")
             if crossover_failed:
@@ -891,10 +1069,9 @@ def run_genetic_optimization(
                 filtered_rows.append(build_filtered_row(child_entry, "invalid_molecule"))
                 continue
 
-            child_entry["inherited_or_estimated_fitness"] = estimated_fitness(
-                child_entry["mol"], seed_fps
+            child_entry["inherited_or_estimated_fitness"] = _score_molecule(
+                child_entry["mol"], seed_fps, fitness_fn
             )
-
             next_population.append(child_entry)
 
         deduped, removed = _dedup_population(next_population)
@@ -926,12 +1103,15 @@ def run_genetic_optimization(
         filters,
         warnings,
         filtered_rows,
+        fitness_fn,
     )
 
     run_tag = build_run_id(seed, run_id)
     entries_with_props: List[Dict[str, object]] = []
     csv_rows: List[Dict[str, object]] = []
     for entry in _sort_population_for_output(population):
+        if output_limit is not None and len(entries_with_props) >= output_limit:
+            break
         try:
             reasons = filter_reasons(entry["mol"], filters)
         except Exception:
@@ -966,13 +1146,60 @@ def run_genetic_optimization(
     if out_csv is not None:
         write_csv(csv_rows, out_csv)
 
-    summary = OptimizationSummary(
-        seed_selected=len(seed_rows),
-        seed_mapped=len(mapped),
+    return OptimizationSummary(
+        seed_selected=len(seeds),
+        seed_mapped=len(seeds),
         generated_valid=len(entries_with_props),
         generated_unique=len(unique_smiles),
         filtered=len(filtered_rows),
         filtered_csv=filtered_csv_path,
         warnings=warnings,
     )
-    return summary
+
+
+def run_genetic_optimization(
+    final_candidates_path: Path,
+    compounds_path: Path,
+    out_sdf: Path,
+    out_csv: Optional[Path],
+    top_n_seeds: int = 10,
+    min_final_score: float = 0.0,
+    generations: int = 10,
+    population_size: int = 30,
+    mutation_rate: float = 0.25,
+    crossover_rate: float = 0.50,
+    elite_size: int = 5,
+    seed: int = 42,
+    run_id: Optional[str] = None,
+    max_molecular_weight: float = 500.0,
+    max_logp: float = 5.0,
+    max_tpsa: float = 250.0,
+    max_hbd: int = 5,
+    max_hba: int = 10,
+    min_qed: float = 0.05,
+) -> OptimizationSummary:
+    seeds, warnings = load_consensus_seeds(
+        final_candidates_path,
+        compounds_path,
+        top_n=top_n_seeds,
+        min_final_score=min_final_score,
+    )
+    return run_genetic_optimization_from_seeds(
+        seeds=seeds,
+        out_sdf=out_sdf,
+        out_csv=out_csv,
+        generations=generations,
+        population_size=population_size,
+        mutation_rate=mutation_rate,
+        crossover_rate=crossover_rate,
+        elite_size=elite_size,
+        seed=seed,
+        run_id=run_id,
+        max_molecular_weight=max_molecular_weight,
+        max_logp=max_logp,
+        max_tpsa=max_tpsa,
+        max_hbd=max_hbd,
+        max_hba=max_hba,
+        min_qed=min_qed,
+        initial_warnings=warnings,
+    )

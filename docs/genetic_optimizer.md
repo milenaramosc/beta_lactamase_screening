@@ -1,10 +1,11 @@
-# Genetic optimizer (fitness guiado por consensus score)
+# Genetic optimizer unificado
 
 ## Objetivo
 
-Esta etapa usa o `final_score` do `final_candidates.csv` para selecionar sementes e
-guiar um algoritmo genetico simples. O resultado sao candidatos preliminares, que
-devem retornar ao ciclo de docking e consensus scoring.
+Esta etapa centraliza o AG usado por `generate_candidate.py`,
+`generate_inhibitors_from_protein.py` e `genetic_optimize.py`. O resultado sao
+candidatos preliminares, que devem retornar ao ciclo de docking, interaction
+scoring e consensus scoring.
 
 Este documento substitui o design inicial de 2026-05-03 para esta etapa.
 
@@ -45,8 +46,8 @@ Opcionais:
 - `--top-n-seeds`, `--min-final-score`, `--generations`, `--population-size`.
 - `--mutation-rate`, `--crossover-rate`, `--elite-size`.
 - `--seed`, `--run-id`, `--verbose`.
-- `--max-molecular-weight` (650), `--max-tpsa` (250), `--max-hbd` (8),
-  `--max-hba` (15), `--min-qed` (0.05).
+- `--max-molecular-weight` (500), `--max-logp` (5), `--max-tpsa` (250),
+  `--max-hbd` (5), `--max-hba` (10), `--min-qed` (0.05).
 
 Use o CSV gerado por:
 
@@ -66,6 +67,7 @@ principal. Elas sao registradas no CSV de auditoria quando `--out-csv` e usado.
 Motivos possiveis em `filter_reason`:
 
 - `mw>{limite}`
+- `logp>{limite}`
 - `tpsa>{limite}`
 - `hbd>{limite}`
 - `hba>{limite}`
@@ -86,6 +88,7 @@ Cada molecula inclui:
 - `inherited_or_estimated_fitness`
 - `source_final_score`
 - `source_final_classification`
+- `source_mode`
 - `canonical_smiles`
 
 ### CSV (opcional)
@@ -101,6 +104,7 @@ Colunas minimas:
 - `inherited_or_estimated_fitness`
 - `source_final_score`
 - `source_final_classification`
+- `source_mode`
 - `molecular_weight`
 - `logp`
 - `hbd`
@@ -135,6 +139,7 @@ Colunas:
 - `parent_2`
 - `filter_reason`
 - `molecular_weight`
+- `logp`
 - `tpsa`
 - `hbd`
 - `hba`
@@ -144,6 +149,7 @@ Colunas:
 - `filtered`
 - `source_final_score`
 - `source_final_classification`
+- `source_mode`
 
 ## Limitações
 
@@ -166,4 +172,12 @@ python scripts/genetic_optimize.py \
   --verbose
 ```
 
-Os candidatos gerados devem retornar ao ciclo de docking e consensus scoring.
+Os candidatos gerados devem retornar ao ciclo:
+
+```bash
+python scripts/screen_and_rank.py \
+  --ligands results/experiments/teste/generated_candidates.sdf
+```
+
+Depois execute `score_interactions.py` para as poses e gere um novo
+`final_candidates.csv` com `consensus_score.py`.

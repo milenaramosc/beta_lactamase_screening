@@ -169,15 +169,21 @@ def load_interactions(path: Optional[Path]) -> Tuple[Dict[str, Dict[str, Optiona
         compound_id = entry.get("compound_id")
         if not compound_id:
             return
-        score = entry.get("interaction_score")
-        current = interactions.get(compound_id)
-        if current:
-            current_score = current.get("interaction_score")
-            if score is not None and (current_score is None or score > current_score):
-                interactions[compound_id] = entry
-            duplicates.append(compound_id)
-        else:
-            interactions[compound_id] = entry
+        aliases = [str(compound_id)]
+        if "__" in str(compound_id):
+            aliases.append(str(compound_id).split("__", 1)[1])
+        for alias in aliases:
+            alias_entry = dict(entry)
+            alias_entry["compound_id"] = alias
+            score = alias_entry.get("interaction_score")
+            current = interactions.get(alias)
+            if current:
+                current_score = current.get("interaction_score")
+                if score is not None and (current_score is None or score > current_score):
+                    interactions[alias] = alias_entry
+                duplicates.append(alias)
+            else:
+                interactions[alias] = alias_entry
 
     if path.is_dir():
         json_files = sorted(path.glob("*.json"))

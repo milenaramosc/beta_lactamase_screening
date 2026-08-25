@@ -36,6 +36,17 @@ from rdkit import DataStructs
 RDLogger.DisableLog("rdApp.*")
 warnings.filterwarnings("ignore")
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+try:
+    from betalactamase_engine.generation import (
+        build_known_inhibitor_seeds,
+        run_genetic_optimization_from_seeds,
+    )
+except ImportError as exc:
+    print(f"\033[91mError: Could not import unified genetic optimizer. {exc}\033[0m")
+    sys.exit(1)
+
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR  = Path(__file__).resolve().parent
@@ -691,6 +702,8 @@ def main():
                         help="Quantos candidatos salvar (padrão: 20)")
     parser.add_argument("--seed", type=int, default=42,
                         help="Semente aleatória (padrão: 42)")
+    parser.add_argument("--out", help="Caminho do SDF de saída")
+    parser.add_argument("--out-csv", help="Caminho do CSV de resumo")
     args = parser.parse_args()
     
     pdb_path = Path(args.pdb)
@@ -741,12 +754,13 @@ def main():
     
     # 4. Carregar seeds
     print(f"\n{BOLD}Carregando inibidores conhecidos como seeds:{RESET}")
-    seeds = []
-    for name, smiles in KNOWN_INHIBITORS.items():
-        mol = Chem.MolFromSmiles(smiles)
-        if mol:
-            seeds.append((name, mol))
-            print(f"  ✓ {name}")
+    try:
+        seeds, seed_warnings = build_known_inhibitor_seeds(KNOWN_INHIBITORS)
+    except ValueError as exc:
+        print(f"{RED}Erro: {exc}{RESET}")
+        sys.exit(1)
+    for seed_record in seeds:
+        print(f"  ✓ {seed_record.compound_id}")
     
     # 5. Executar GA
     print(f"\n{BOLD}Parâmetros do GA:{RESET}")
@@ -754,44 +768,66 @@ def main():
     print(f"  População: {args.population}")
     print(f"  Taxa de mutação: {args.mutation_rate}")
     
-    candidates = run_genetic_algorithm(
-        seeds,
-        site_info,
-        pharmacophore,
-        generations=args.generations,
-        population_size=args.population,
-        mutation_rate=args.mutation_rate,
-        rng=rng,
-    )
-    
     # 6. Salvar resultados
     results_dir = PROJECT_DIR / "results"
     results_dir.mkdir(exist_ok=True)
-    out_sdf = results_dir / f"inhibitors_{pdb_path.stem}.sdf"
-    out_csv = results_dir / f"inhibitors_{pdb_path.stem}.csv"
-    
-    print(f"\nGerando coordenadas 3D e salvando top {args.top_out} candidatos...")
-    saved = save_results(candidates, args.top_out, out_sdf, out_csv)
+    out_sdf = Path(args.out) if args.out else results_dir / f"inhibitors_{pdb_path.stem}.sdf"
+    out_csv = Path(args.out_csv) if args.out_csv else results_dir / f"inhibitors_{pdb_path.stem}.csv"
+
+    def protein_fitness(mol: Chem.Mol, ref_fps: list) -> float:
+        return fitness_protein_based(mol, site_info, ref_fps, pharmacophore)
+
+    print(f"\nExecutando AG unificado e salvando top {args.top_out} candidatos...")
+    try:
+        summary = run_genetic_optimization_from_seeds(
+            seeds=seeds,
+            out_sdf=out_sdf,
+            out_csv=out_csv,
+            generations=args.generations,
+            population_size=args.population,
+            mutation_rate=args.mutation_rate,
+            crossover_rate=1.0 - args.mutation_rate,
+            elite_size=max(2, args.population // 5),
+            seed=args.seed,
+            max_molecular_weight=500.0,
+            max_logp=5.0,
+            max_tpsa=250.0,
+            max_hbd=5,
+            max_hba=10,
+            min_qed=0.05,
+            fitness_fn=protein_fitness,
+            initial_warnings=seed_warnings,
+            output_limit=args.top_out,
+        )
+    except ValueError as exc:
+        print(f"{RED}Erro no AG unificado: {exc}{RESET}")
+        sys.exit(1)
     
     # 7. Resumo
     print(f"\n{GREEN}{'═' * 70}{RESET}")
     print(f"{GREEN}Concluído!{RESET}")
-    print(f"  {saved} candidatos salvos:")
+    print(f"  {summary.generated_valid} candidatos salvos:")
     print(f"    {out_sdf}")
     print(f"    {out_csv}")
     
-    if saved > 0:
+    if summary.generated_valid > 0:
         print(f"\n{BOLD}Top 10 candidatos gerados:{RESET}")
         print(f"  {'#':<4} {'Fitness':<10} {'MW':<8} {'LogP':<7} {'QED':<7} {'SMILES':<60}")
-        print(f"  {'─'*4} {'─'*10} {'─'*8} {'─'*7} {'─'*7} {'─'*60}")
+        print(f"  {'-'*4} {'-'*10} {'-'*8} {'-'*7} {'-'*7} {'-'*60}")
         with open(out_csv) as f:
             reader = csv.DictReader(f)
             for i, row in enumerate(reader, 1):
                 if i > 10:
                     break
-                smi_short = row["smiles"][:57] + "..." if len(row["smiles"]) > 60 else row["smiles"]
-                print(f"  {row['rank']:<4} {row['fitness']:<10} {row['mw']:<8} "
-                      f"{row['logp']:<7} {row['qed']:<7} {smi_short}")
+                smi = row.get("canonical_smiles", "")
+                smi_short = smi[:57] + "..." if len(smi) > 60 else smi
+                print(f"  {i:<4} {row.get('inherited_or_estimated_fitness', ''):<10} "
+                      f"{row.get('molecular_weight', ''):<8} {row.get('logp', ''):<7} "
+                      f"{row.get('qed', ''):<7} {smi_short}")
+    if summary.warnings:
+        print(f"\n{YELLOW}Warnings:{RESET}")
+        for warning in summary.warnings:
+            print(f"  - {warning}")
     
     print(f"\n{CYAN}Próximos passos:{RESET}")
     print(f"  1. Revisar candidatos em {out_csv}")
